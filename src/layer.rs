@@ -29,6 +29,7 @@ where
     time: ChronoUtc,
     writer: W,
     fields: StackdriverFields,
+    log_span: bool,
 }
 
 impl Stackdriver {
@@ -48,6 +49,7 @@ where
             time: ChronoUtc::rfc3339(),
             writer,
             fields: StackdriverFields,
+            log_span: false,
         }
     }
 
@@ -67,21 +69,30 @@ where
 
         map.serialize_entry("time", &time)?;
         map.serialize_entry("severity", &meta.level().as_serde())?;
-        map.serialize_entry("target", &meta.target())?;
+        map.serialize_entry("logger", &meta.target())?;
+        map.serialize_entry(
+            "logging.googleapis.com/sourceLocation",
+            &SourceLocation {
+                line: meta.line(),
+                file: meta.file(),
+            },
+        )?;
 
-        if let Some(span) = context.lookup_current() {
-            let name = &span.name();
-            let extensions = span.extensions();
-            let formatted_fields = extensions
-                .get::<FormattedFields<StackdriverFields>>()
-                .expect("No fields!");
+        if self.log_span {
+            if let Some(span) = context.lookup_current() {
+                let name = &span.name();
+                let extensions = span.extensions();
+                let formatted_fields = extensions
+                    .get::<FormattedFields<StackdriverFields>>()
+                    .expect("No fields!");
 
-            // TODO: include serializable data type in extensions instead of str
-            let mut fields: Value = serde_json::from_str(&formatted_fields)?;
+                // TODO: include serializable data type in extensions instead of str
+                let mut fields: Value = serde_json::from_str(&formatted_fields)?;
 
-            fields["name"] = serde_json::json!(name);
+                fields["name"] = serde_json::json!(name);
 
-            map.serialize_entry("span", &fields)?;
+                map.serialize_entry("span", &fields)?;
+            }
         }
 
         // TODO: enable deeper structuring of keys and values across tracing
@@ -106,6 +117,7 @@ impl Default for Stackdriver {
             time: ChronoUtc::rfc3339(),
             writer: || std::io::stdout(),
             fields: StackdriverFields,
+            log_span: false,
         }
     }
 }
@@ -165,4 +177,10 @@ enum Error {
 
     #[error("IO error")]
     Io(#[from] std::io::Error),
+}
+
+#[derive(serde::Serialize)]
+struct SourceLocation<'a> {
+    file: Option<&'a str>,
+    line: Option<u32>,
 }

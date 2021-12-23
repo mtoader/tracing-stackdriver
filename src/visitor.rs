@@ -35,11 +35,16 @@ where
     fn finish(mut self) -> fmt::Result {
         let inner = || {
             let mut http_request = BTreeMap::new();
+            let mut operation = BTreeMap::new();
 
             for (key, value) in self.values {
                 if key.starts_with("http_request.") {
                     if let Some(request_key) = key.splitn(2, '.').last() {
                         http_request.insert(request_key.to_camel_case(), value);
+                    }
+                } else if key.starts_with("operation.") {
+                    if let Some(request_key) = key.splitn(2, '.').last() {
+                        operation.insert(request_key.to_camel_case(), value);
                     }
                 } else {
                     self.serializer
@@ -50,6 +55,10 @@ where
             if !http_request.is_empty() {
                 self.serializer
                     .serialize_entry("httpRequest", &http_request)?;
+            }
+            if !operation.is_empty() {
+                self.serializer
+                    .serialize_entry("logging.googleapis.com/operation", &operation)?;
             }
 
             self.serializer.end()
