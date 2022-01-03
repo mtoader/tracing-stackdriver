@@ -5,29 +5,22 @@ use std::{
     fmt::{self, Write},
     io,
 };
-use tracing_core::{
-    span::{Attributes, Id},
-    Event, Subscriber,
-};
+use tracing_core::{span::{Attributes, Id}, Event, Subscriber};
 use tracing_serde::AsSerde;
 use tracing_subscriber::{
     field::{MakeVisitor, VisitOutput},
-    fmt::{
-        time::{ChronoUtc, FormatTime},
-        FormatFields, FormattedFields, MakeWriter,
-    },
+    fmt::{time::UtcTime, FormatFields, FormattedFields, MakeWriter},
     layer::Context,
     registry::LookupSpan,
     Layer,
 };
+use time::format_description::well_known;
 
-/// A tracing adapater for stackdriver
+/// A tracing adapter for stackdriver
 pub struct Stackdriver<W = fn() -> io::Stdout>
-where
-    W: MakeWriter,
 {
-    time: ChronoUtc,
-    writer: W,
+    time: UtcTime<well_known::Rfc3339>,
+    make_writer: W,
     fields: StackdriverFields,
     log_span: bool,
 }
@@ -39,19 +32,25 @@ impl Stackdriver {
     }
 }
 
-impl<W> Stackdriver<W>
-where
-    W: MakeWriter,
-{
+impl<W> Stackdriver<W> {
     /// Initialize the Stackdriver Layer with a custom writer
-    pub fn with_writer(writer: W) -> Self {
-        Self {
-            time: ChronoUtc::rfc3339(),
-            writer,
+    pub fn with_writer<W2>(self, make_writer: W2) -> Stackdriver<W2>
+    where
+        W2: for<'writer> MakeWriter<'writer> + 'static,
+    {
+        Stackdriver {
+            time: UtcTime::rfc_3339(),
+            make_writer,
             fields: StackdriverFields,
             log_span: false,
         }
     }
+}
+
+impl<W> Stackdriver<W>
+where
+    W: for<'writer> MakeWriter<'writer> + 'static,
+{
 
     fn visit<S>(&self, event: &Event, context: Context<S>) -> Result<(), Error>
     where
@@ -61,7 +60,7 @@ where
         let meta = event.metadata();
         let mut time = String::new();
 
-        self.time.format_time(&mut time).map_err(|_| Error::Time)?;
+        // self.time.format_time(&mut time).map_err(|_| Error::Time)?;
 
         let mut serializer = serde_json::Serializer::new(&mut buffer);
 
@@ -104,7 +103,7 @@ where
         visitor.finish().map_err(Error::from)?;
 
         use std::io::Write;
-        let mut writer = self.writer.make_writer();
+        let mut writer = self.make_writer.make_writer();
         buffer.write_all(b"\n")?;
         writer.write_all(&mut buffer)?;
         Ok(())
@@ -114,8 +113,8 @@ where
 impl Default for Stackdriver {
     fn default() -> Self {
         Self {
-            time: ChronoUtc::rfc3339(),
-            writer: || std::io::stdout(),
+            time: UtcTime::rfc_3339(),
+            make_writer: std::io::stdout,
             fields: StackdriverFields,
             log_span: false,
         }
@@ -125,25 +124,8 @@ impl Default for Stackdriver {
 impl<S, W> Layer<S> for Stackdriver<W>
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
-    W: MakeWriter + 'static,
+    W: for<'writer> MakeWriter<'writer> + 'static,
 {
-    fn new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
-        let span = context.span(id).expect("Span not found, this is a bug");
-        let mut extensions = span.extensions_mut();
-
-        if extensions
-            .get_mut::<FormattedFields<StackdriverFields>>()
-            .is_none()
-        {
-            let mut buffer = String::new();
-            if self.fields.format_fields(&mut buffer, attributes).is_ok() {
-                let fmt_fields: FormattedFields<StackdriverFields> = FormattedFields::new(buffer);
-
-                extensions.insert(fmt_fields);
-            }
-        }
-    }
-
     #[allow(unused_variables)]
     fn on_event(&self, event: &Event, context: Context<S>) {
         if let Err(error) = self.visit(event, context) {
